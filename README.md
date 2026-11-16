@@ -5,8 +5,8 @@ what each day can take and tells you when to pull back or when there is room for
 a good dinner.
 
 No build step, no dependencies, no backend. Plain HTML, CSS and JavaScript.
-Type is Fraunces for figures and Inter for labels. Light and dark follow the
-device until you press the sun/moon button, after which your choice sticks.
+Type is Fraunces for figures and Inter for labels. It opens in the light theme for
+everyone; the sun/moon button switches to dark and the choice sticks.
 
 ## How the numbers work
 

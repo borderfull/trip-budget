@@ -1,8 +1,8 @@
 /* Trip Budget — a ledger for one trip.
    Type: Fraunces (optical sizing) for figures and notes, Inter for labels.
-   Theme: index.html sets data-theme on <html> before first paint, from the
-   saved choice or the device. Everything below keys off that one attribute,
-   so the toggle and the device setting can never disagree. */
+   Theme: index.html sets data-theme on <html> before first paint: light by
+   default, dark once the visitor chooses it. Everything below keys off that
+   one attribute. */
 
 :root,:root[data-theme=light]{
   --paper:#F2EDE3;

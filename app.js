@@ -90,17 +90,6 @@ function applyTheme(t, remember) {
   if (m) m.setAttribute('content', PAPER[t]);
   if (remember) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} }
 }
-function watchDeviceTheme() {
-  if (!window.matchMedia) return;
-  const mq = matchMedia('(prefers-color-scheme: dark)');
-  const follow = () => {
-    let saved = null;
-    try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
-    if (saved !== 'light' && saved !== 'dark') { applyTheme(mq.matches ? 'dark' : 'light', false); render(); }
-  };
-  if (mq.addEventListener) mq.addEventListener('change', follow);
-  else if (mq.addListener) mq.addListener(follow);
-}
 
 /* ------------------------------------------------------------- state */
 
@@ -193,7 +182,6 @@ async function flush() {
 }
 
 async function boot() {
-  watchDeviceTheme();
   S = readLocal();
   const installed = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
   track('app_open', { has_trip: !!S, installed: !!installed, theme: currentTheme() });
