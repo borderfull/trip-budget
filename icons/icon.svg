@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Trip Budget">
+  <rect width="512" height="512" fill="#F2EDE3"/>
+  <g fill="none" stroke-linecap="butt">
+    <path d="M122 288 A134 134 0 0 1 390 288" stroke="#D5CBB9" stroke-width="38"/>
+    <path d="M122 288 A134 134 0 0 1 390 288" stroke="#1C1813" stroke-width="38" pathLength="100" stroke-dasharray="34 100"/>
+    <line x1="256" y1="288" x2="330" y2="163" stroke="#A8432A" stroke-width="16"/>
+  </g>
+  <circle cx="330" cy="163" r="15" fill="#A8432A"/>
+  <rect x="122" y="343" width="268" height="11" fill="#1C1813"/>
+  <rect x="122" y="366" width="268" height="6" fill="#1C1813" opacity=".55"/>
+</svg>

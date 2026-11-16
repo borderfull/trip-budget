@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trip Budget</title>
+<meta name="description" content="A daily spending ledger for one trip: set a strict budget, log what you spend, see what today can take.">
+<meta name="theme-color" content="#F2EDE3" id="themeColor">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Trip Budget">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./app.css">
+<!-- vercel-analytics:start — stripped from the single-file Claude build -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script defer src="/_vercel/insights/script.js"></script>
+<!-- vercel-analytics:end -->
+<!-- google-analytics:start — also stripped from the Claude build -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G3LPX71J7E"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag() { dataLayer.push(arguments); }
+gtag('js', new Date());
+gtag('config', 'G-G3LPX71J7E');
+</script>
+<!-- google-analytics:end -->
+<script>
+/* Settle the theme before the first paint, or the page flashes the wrong one.
+   Stored choice wins; otherwise follow the device. */
+(function () {
+  var t;
+  try { t = localStorage.getItem('tripbudget.theme'); } catch (e) {}
+  if (t !== 'light' && t !== 'dark') {
+    t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+  document.documentElement.style.background = (t === 'dark' ? '#14110C' : '#F2EDE3');
+})();
+</script>
+</head>
+<body>
+<main class="wrap" id="app"></main>
+<div id="chrome"></div>
+<div id="overlay"></div>
+<div id="toast"></div>
+<script src="./app.js"></script>
+</body>
+</html>
