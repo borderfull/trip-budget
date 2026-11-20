@@ -753,8 +753,9 @@ function formHTML(isNew) {
 }
 
 function curOptions(selected, short, order) {
-  const codes = (order || []).filter(isCur);
-  Object.keys(CURRENCIES).forEach(k => { if (codes.indexOf(k) < 0) codes.push(k); });
+  // currencies already used on this trip first, each listed once, then the rest
+  const codes = [];
+  (order || []).concat(Object.keys(CURRENCIES)).forEach(k => { if (isCur(k) && codes.indexOf(k) < 0) codes.push(k); });
   return codes.map(k => '<option value="' + k + '"' + (k === selected ? ' selected' : '') + '>' +
     (short ? k : k + ' \u2014 ' + CURRENCIES[k]) + '</option>').join('');
 }
