@@ -30,6 +30,30 @@ Prepaid items (flights, hotels booked in advance) are taken off the top, so they
 never distort the daily average. The buffer is held back before the daily figure
 is worked out, so a bad day does not eat the trip.
 
+## Currencies
+
+The trip has one **home currency** (INR by default), chosen when you set it up.
+The budget and every total are in it. It locks once spends are logged, because
+those spends have been converted into it.
+
+Each spend can be in any currency. Pick it next to the amount; the app
+converts at the day's rate and stores four things: the amount in home currency,
+the amount actually paid, its currency, and the rate used. Past spends never
+move when rates change, and editing one keeps its original rate unless you
+change it.
+
+Rates come from ExchangeRate-API's open endpoint (no key, updated daily,
+attribution shown in the add sheet as their terms require) and are cached on
+the device for 12 hours. If there is no connection the app reuses your last
+rate for that currency, and if it has never seen one it asks you to type it,
+phrased the way people say it ("$1 buys how many THB?").
+
+While you are spending in a foreign currency, the Today screen also shows what
+is left in that currency.
+
+Trips saved before currencies existed are read as INR with every figure
+unchanged, and older versions of the app can still read new data.
+
 ## Screens
 
 | Screen | What it answers |

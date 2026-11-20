@@ -28,10 +28,105 @@ const sum = a => a.reduce((x, y) => x + y, 0);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
 
-function inr(n) {
-  const r = Math.round(n);
-  return (r < 0 ? '−' : '') + '₹' + Math.abs(r).toLocaleString('en-IN');
+/* ----------------------------------------------------------- currencies */
+
+const CURRENCIES = {
+  INR: 'Indian rupee', USD: 'US dollar', EUR: 'Euro', GBP: 'British pound',
+  AED: 'UAE dirham', SAR: 'Saudi riyal', QAR: 'Qatari riyal', OMR: 'Omani rial', KWD: 'Kuwaiti dinar', BHD: 'Bahraini dinar',
+  THB: 'Thai baht', SGD: 'Singapore dollar', MYR: 'Malaysian ringgit', IDR: 'Indonesian rupiah', VND: 'Vietnamese dong',
+  PHP: 'Philippine peso', KHR: 'Cambodian riel', LAK: 'Lao kip',
+  LKR: 'Sri Lankan rupee', NPR: 'Nepalese rupee', BTN: 'Bhutanese ngultrum', MVR: 'Maldivian rufiyaa', BDT: 'Bangladeshi taka',
+  JPY: 'Japanese yen', KRW: 'South Korean won', CNY: 'Chinese yuan', HKD: 'Hong Kong dollar', TWD: 'Taiwan dollar',
+  AUD: 'Australian dollar', NZD: 'New Zealand dollar', CAD: 'Canadian dollar',
+  CHF: 'Swiss franc', SEK: 'Swedish krona', NOK: 'Norwegian krone', DKK: 'Danish krone', ISK: 'Icelandic krona',
+  CZK: 'Czech koruna', HUF: 'Hungarian forint', PLN: 'Polish zloty', TRY: 'Turkish lira', GEL: 'Georgian lari',
+  EGP: 'Egyptian pound', MAD: 'Moroccan dirham', KES: 'Kenyan shilling', TZS: 'Tanzanian shilling', ZAR: 'South African rand',
+  MUR: 'Mauritian rupee', BRL: 'Brazilian real', MXN: 'Mexican peso'
+};
+const isCur = c => Object.prototype.hasOwnProperty.call(CURRENCIES, c);
+/* Rough units per US dollar. Used ONLY to decide which way round to ask for a
+ * rate nobody has fetched yet (“$1 buys how many THB?” rather than
+ * “1 THB is how many $?”). Never used to convert money. */
+const MAGNITUDE = {
+  INR: 84, USD: 1, EUR: 0.92, GBP: 0.79, AED: 3.67, SAR: 3.75, QAR: 3.64, OMR: 0.385, KWD: 0.31, BHD: 0.377,
+  THB: 35, SGD: 1.34, MYR: 4.5, IDR: 16000, VND: 25000, PHP: 58, KHR: 4100, LAK: 22000,
+  LKR: 300, NPR: 135, BTN: 84, MVR: 15.4, BDT: 120, JPY: 150, KRW: 1400, CNY: 7.2, HKD: 7.8, TWD: 32,
+  AUD: 1.5, NZD: 1.65, CAD: 1.38, CHF: 0.88, SEK: 10.5, NOK: 10.8, DKK: 6.9, ISK: 138,
+  CZK: 23, HUF: 370, PLN: 4, TRY: 34, GEL: 2.7, EGP: 49, MAD: 10, KES: 129, TZS: 2700, ZAR: 18,
+  MUR: 46, BRL: 5.6, MXN: 19.5
+};
+const LAKH = { INR: 1, NPR: 1, LKR: 1, BDT: 1, BTN: 1 };
+
+const _fmt = {};
+function fmtFor(cur, dec) {
+  const k = cur + dec;
+  if (!_fmt[k]) {
+    const o = { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: dec };
+    try { _fmt[k] = new Intl.NumberFormat(LAKH[cur] ? 'en-IN' : 'en-US', Object.assign({ currencyDisplay: 'narrowSymbol' }, o)); }
+    catch (e) {
+      try { _fmt[k] = new Intl.NumberFormat('en-US', o); }
+      catch (e2) { _fmt[k] = { format: n => cur + ' ' + Number(n).toFixed(dec) }; }
+    }
+  }
+  return _fmt[k];
 }
+function baseCur() { return (S && S.trip.currency) || (F && F.currency) || 'INR'; }
+/* whole units, for every total in the app */
+function money(n, cur) {
+  cur = cur || baseCur();
+  const r = Math.round(n);
+  return (r < 0 ? '−' : '') + fmtFor(cur, 0).format(Math.abs(r));
+}
+/* up to two decimals, for the amount a spend was actually paid in */
+function moneyExact(n, cur) { return (n < 0 ? '−' : '') + fmtFor(cur, 2).format(Math.abs(n)); }
+function symbolOf(cur) {
+  try { const p = fmtFor(cur, 0).formatToParts(1).find(x => x.type === 'currency'); return p ? p.value : cur; }
+  catch (e) { return cur; }
+}
+function numStr(x) {
+  if (!(x > 0)) return '';
+  return x >= 1 ? x.toLocaleString('en-US', { maximumFractionDigits: 2 })
+                : x.toLocaleString('en-US', { maximumSignificantDigits: 4 });
+}
+
+/* Exchange rates: ExchangeRate-API's open endpoint (no key, daily updates,
+ * attribution required). Cached on the device so the app converts offline;
+ * when there is no rate at all the person types one in. */
+const RATE_KEY = 'tripbudget.rates';
+let RATES = (function () { try { return JSON.parse(localStorage.getItem(RATE_KEY)) || null; } catch (e) { return null; } })();
+let ratesInflight = null;
+
+function refreshRates(base) {
+  if (RATES && RATES.base === base && Date.now() - RATES.at < 12 * 3600e3) return Promise.resolve(RATES);
+  if (ratesInflight) return ratesInflight;
+  if (typeof window.fetch !== 'function') return Promise.resolve(null);
+  ratesInflight = window.fetch('https://open.er-api.com/v6/latest/' + encodeURIComponent(base))
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      if (j && j.result === 'success' && j.rates) {
+        RATES = { base: j.base_code || base, at: Date.now(), rates: j.rates };
+        try { localStorage.setItem(RATE_KEY, JSON.stringify(RATES)); } catch (e) {}
+      }
+      return RATES;
+    })
+    .catch(() => null)
+    .then(r => { ratesInflight = null; return r; });
+  return ratesInflight;
+}
+/* how many units of the home currency one unit of `cur` buys */
+function liveRate(cur) {
+  const base = baseCur();
+  if (cur === base) return 1;
+  if (RATES && RATES.base === base && RATES.rates && RATES.rates[cur] > 0) return 1 / RATES.rates[cur];
+  return null;
+}
+function lastUsedRate(cur) {
+  if (!S) return null;
+  let best = null;
+  S.expenses.forEach(e => { if (e.cur === cur && e.rate > 0 && (!best || e.date >= best.date)) best = e; });
+  return best ? best.rate : null;
+}
+function knownRate(cur) { return liveRate(cur) || lastUsedRate(cur); }
 /* round advice figures so they read like money a person would hand over */
 function nice(n) { n = Math.max(0, n); return n >= 200 ? Math.round(n / 10) * 10 : Math.round(n); }
 
@@ -110,9 +205,13 @@ function normalize(o) {
   const t = (o && o.trip) || {};
   const shares = {};
   CATS.forEach(c => { shares[c.id] = Number(t.shares && t.shares[c.id]) || 0; });
+  // trips saved before currencies existed were all in rupees
+  const base = isCur(t.currency) ? t.currency : 'INR';
   return {
     trip: {
       name: String(t.name || 'My trip'),
+      currency: base,
+      lastCur: isCur(t.lastCur) ? t.lastCur : base,
       total: Number(t.total) || 0,
       start: validDate(t.start) ? t.start : todayStr(),
       days: clamp(Math.round(Number(t.days)) || 1, 1, 365),
@@ -124,7 +223,14 @@ function normalize(o) {
     },
     expenses: (Array.isArray(o && o.expenses) ? o.expenses : [])
       .filter(e => e && validDate(e.date))
-      .map(e => ({ id: e.id || uid(), date: e.date, cat: catOf(e.cat).id, amount: Number(e.amount) || 0, note: String(e.note || '') })),
+      .map(e => {
+        // `amount` is always in the home currency; `orig`/`cur` are what was paid, `rate` what it was converted at
+        const amount = Number(e.amount) || 0;
+        const cur = isCur(e.cur) ? e.cur : base;
+        const foreign = cur !== base && Number(e.orig) > 0 && Number(e.rate) > 0;
+        return { id: e.id || uid(), date: e.date, cat: catOf(e.cat).id, amount: amount, note: String(e.note || ''),
+                 cur: foreign ? cur : base, orig: foreign ? Number(e.orig) : amount, rate: foreign ? Number(e.rate) : 1 };
+      }),
     updatedAt: Number(o && o.updatedAt) || 0
   };
 }
@@ -185,6 +291,7 @@ async function boot() {
   S = readLocal();
   const installed = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
   track('app_open', { has_trip: !!S, installed: !!installed, theme: currentTheme() });
+  if (S) refreshRates(S.trip.currency).then(() => { if (!A && view === 'today') render(); });
   watchTimeSpent();
   setStatus(lsOK ? 'local' : 'blocked');
   render();
@@ -279,13 +386,13 @@ function suggestions(c) {
 
   if (c.status === 'before') {
     out.push({ tone: 'ok', h: 'Not started',
-      p: inr(c.target) + ' a day for ' + t.days + ' days.' });
+      p: money(c.target) + ' a day for ' + t.days + ' days.' });
     return out;
   }
   if (c.status === 'after') {
     const left = c.spendable - c.spentTotal;
     out.push({ tone: left >= 0 ? 'ok' : 'bad', h: left >= 0 ? 'Finished under' : 'Finished over',
-      p: inr(c.avg) + ' a day against a plan of ' + inr(c.target) + '.' });
+      p: money(c.avg) + ' a day against a plan of ' + money(c.target) + '.' });
     return out;
   }
 
@@ -295,27 +402,27 @@ function suggestions(c) {
   const dailyGap = c.safeToday - c.target;
   const tol = Math.max(c.target * 0.04, 25);
 
-  const foodCap = inr(nice(Math.max(0, food.safe)));
+  const foodCap = money(nice(Math.max(0, food.safe)));
 
   if (c.safeToday <= 0) {
-    out.push({ tone: 'bad', h: 'Budget used up', p: 'Only the ' + inr(c.buffer) + ' buffer is left.' });
+    out.push({ tone: 'bad', h: 'Budget used up', p: 'Only the ' + money(c.buffer) + ' buffer is left.' });
   } else if (dailyGap < -tol) {
-    out.push({ tone: 'bad', h: inr(-c.bank) + ' over pace',
-      p: last ? inr(c.safeToday) + ' is all that is left.'
-              : 'Hold today to ' + inr(nice(c.safeToday)) + ' to finish level. Food ' + foodCap + '.' });
+    out.push({ tone: 'bad', h: money(-c.bank) + ' over pace',
+      p: last ? money(c.safeToday) + ' is all that is left.'
+              : 'Hold today to ' + money(nice(c.safeToday)) + ' to finish level. Food ' + foodCap + '.' });
   } else if (dailyGap > tol) {
-    out.push({ tone: 'ok', h: inr(c.bank) + ' to spare',
-      p: last ? inr(nice(c.safeToday)) + ' left to use or bring home.'
-              : 'Today stretches to ' + inr(nice(c.safeToday)) + '. Food up to ' + foodCap + '.' });
+    out.push({ tone: 'ok', h: money(c.bank) + ' to spare',
+      p: last ? money(nice(c.safeToday)) + ' left to use or bring home.'
+              : 'Today stretches to ' + money(nice(c.safeToday)) + '. Food up to ' + foodCap + '.' });
   } else {
-    out.push({ tone: 'ok', h: 'On plan', p: inr(nice(c.safeToday)) + ' today, food around ' + foodCap + '.' });
+    out.push({ tone: 'ok', h: 'On plan', p: money(nice(c.safeToday)) + ' today, food around ' + foodCap + '.' });
   }
 
   const hot = hotCat(c);
-  if (hot) out.push({ tone: 'warn', h: hot.label + ' running high', p: inr(hot.excess) + ' over its share.' });
+  if (hot) out.push({ tone: 'warn', h: hot.label + ' running high', p: money(hot.excess) + ' over its share.' });
 
   if (c.remainingBudget < 0 && c.safeToday > 0)
-    out.push({ tone: 'warn', h: 'Into the buffer', p: inr(Math.max(0, c.buffer + c.remainingBudget)) + ' of buffer left.' });
+    out.push({ tone: 'warn', h: 'Into the buffer', p: money(Math.max(0, c.buffer + c.remainingBudget)) + ' of buffer left.' });
 
   return out;
 }
@@ -369,8 +476,8 @@ function expRow(e) {
   const c = catOf(e.cat);
   return '<div class="exp"><div class="mid">' +
     '<div class="ttl">' + esc(e.note || c.label) + '</div>' +
-    '<div class="sub">' + c.label + '</div></div>' +
-    '<div class="amt num">' + inr(e.amount) + '</div>' +
+    '<div class="sub">' + c.label + (e.cur && e.cur !== baseCur() && e.orig > 0 ? ' \u00B7 <span class="paid">' + moneyExact(e.orig, e.cur) + '</span>' : '') + '</div></div>' +
+    '<div class="amt num">' + money(e.amount) + '</div>' +
     '<button class="iconbtn" data-act="edit" data-id="' + e.id + '" aria-label="Edit this spend">' + ICON.edit + '</button>' +
     '<button class="iconbtn" data-act="del" data-id="' + e.id + '" aria-label="Delete this spend">' + ICON.del + '</button></div>';
 }
@@ -392,8 +499,8 @@ function gaugeHTML(c) {
   if (c.status === 'during') {
     // same threshold the advice uses, so the two never contradict each other
     const gap = c.safeToday - c.target, tol = Math.max(c.target * 0.04, 25);
-    pace = gap < -tol ? '<span class="pace bad">' + inr(-c.bank) + ' over pace</span>'
-         : gap >  tol ? '<span class="pace ok">' + inr(c.bank) + ' under pace</span>'
+    pace = gap < -tol ? '<span class="pace bad">' + money(-c.bank) + ' over pace</span>'
+         : gap >  tol ? '<span class="pace ok">' + money(c.bank) + ' under pace</span>'
          :              '<span class="pace ok">On pace</span>';
   }
 
@@ -412,7 +519,7 @@ function gaugeHTML(c) {
         : '') +
     '</svg><div class="mid"><div class="pct num' + (over ? ' bad' : '') + '">' + Math.round(used * 100) + '%</div>' +
       '<div class="small mut">' + sub + '</div></div></div>' +
-    '<div class="ends num"><span>₹0</span><span>' + inr(c.spendable) + ' spendable</span></div>' +
+    '<div class="ends num"><span>₹0</span><span>' + money(c.spendable) + ' spendable</span></div>' +
     '</section>';
 }
 
@@ -433,7 +540,7 @@ function chartHTML(c) {
   const slot = W / vals.length, bw = Math.min(26, slot * 0.6);
 
   let s = '<svg viewBox="0 0 ' + W + ' 110" width="100%" style="display:block;margin-top:10px" role="img" ' +
-          'aria-label="Spending each day against a plan of ' + inr(c.target) + ' a day">';
+          'aria-label="Spending each day against a plan of ' + money(c.target) + ' a day">';
   s += '<line x1="0" x2="' + W + '" y1="' + base + '" y2="' + base + '" stroke="var(--ink)" stroke-width="1"/>';
 
   vals.forEach((x, k) => {
@@ -444,7 +551,7 @@ function chartHTML(c) {
       const h = Math.max(2, x.v / mx * ph);
       const col = x.v > c.target ? 'var(--red)' : 'var(--ink)';
       s += '<rect x="' + xx.toFixed(1) + '" y="' + (base - h).toFixed(1) + '" width="' + bw.toFixed(1) +
-           '" height="' + h.toFixed(1) + '" fill="' + col + '"><title>Day ' + x.i + ': ' + inr(x.v) + '</title></rect>';
+           '" height="' + h.toFixed(1) + '" fill="' + col + '"><title>Day ' + x.i + ': ' + money(x.v) + '</title></rect>';
     } else if (future) {
       s += '<rect x="' + xx.toFixed(1) + '" y="' + top + '" width="' + bw.toFixed(1) + '" height="' + ph +
            '" fill="none" stroke="var(--rule)" stroke-dasharray="2 3"/>';
@@ -458,9 +565,18 @@ function chartHTML(c) {
   const ty = base - c.target / mx * ph;
   s += '<line x1="0" x2="' + W + '" y1="' + ty.toFixed(1) + '" y2="' + ty.toFixed(1) +
        '" stroke="var(--ink)" stroke-width="1" stroke-dasharray="4 4" opacity=".55"/>';
-  s += '<text x="' + W + '" y="' + Math.max(9, ty - 5).toFixed(1) + '" text-anchor="end">PLAN ' + inr(c.target) + '</text></svg>';
+  s += '<text x="' + W + '" y="' + Math.max(9, ty - 5).toFixed(1) + '" text-anchor="end">PLAN ' + money(c.target) + '</text></svg>';
 
   return s;
+}
+
+/* the headline restated in the currency you last spent in, if it isn't the home one */
+function localLine(v) {
+  const lc = S.trip.lastCur;
+  if (!(v > 0) || !lc || lc === baseCur()) return '';
+  const r = knownRate(lc);
+  if (!r) return '';
+  return '<div class="inlocal num">\u2248 ' + money(v / r, lc) + (symbolOf(lc) === '$' ? ' ' + lc : '') + '</div>';
 }
 
 function todayHTML(c) {
@@ -470,27 +586,28 @@ function todayHTML(c) {
   if (c.status === 'before') {
     const n = 1 - c.raw;
     h += '<div class="lead">Leaving in</div><div class="' + cls + '">' + n + ' day' + (n === 1 ? '' : 's') + '</div>' +
-         '<div class="small mut undertow">' + inr(c.target) + ' a day once you go.</div>';
+         '<div class="small mut undertow">' + money(c.target) + ' a day once you go.</div>';
   } else if (c.status === 'after') {
     const left = c.spendable - c.spentTotal;
     h += '<div class="lead">' + (left >= 0 ? 'Under budget by' : 'Over budget by') + '</div>' +
-         '<div class="' + cls + (left < 0 ? ' neg' : '') + '">' + inr(Math.abs(left)) + '</div>' +
-         '<div class="small mut undertow">' + inr(c.avg) + ' a day average.</div>';
+         '<div class="' + cls + (left < 0 ? ' neg' : '') + '">' + money(Math.abs(left)) + '</div>' +
+         '<div class="small mut undertow">' + money(c.avg) + ' a day average.</div>';
   } else {
     const gone = c.safeToday <= 0, over = c.leftToday < 0;
     h += '<div class="lead">' + (gone ? 'Nothing left today' : over ? 'Over today by' : 'Left to spend today') + '</div>' +
-         '<div class="' + cls + ((over || gone) ? ' neg' : '') + '">' + (gone ? inr(0) : inr(over ? -c.leftToday : c.leftToday)) + '</div>' +
-         '<div class="row small mut num undertow"><span>Spent ' + inr(c.spentToday) + '</span>' +
-         '<span>Ceiling ' + inr(Math.max(0, c.safeToday)) + '</span></div>';
+         '<div class="' + cls + ((over || gone) ? ' neg' : '') + '">' + (gone ? money(0) : money(over ? -c.leftToday : c.leftToday)) + '</div>' +
+         localLine(gone || over ? 0 : c.leftToday) +
+         '<div class="row small mut num undertow"><span>Spent ' + money(c.spentToday) + '</span>' +
+         '<span>Ceiling ' + money(Math.max(0, c.safeToday)) + '</span></div>';
   }
 
   h += gaugeHTML(c);
 
   const avgTone = c.d > 0 ? (c.avg > c.target * 1.05 ? 'bad' : (c.avg < c.target * 0.95 ? 'ok' : '')) : '';
   h += '<div class="tiles">' +
-       '<div class="tile"><div class="t">Plan / day</div><div class="v num">' + inr(c.target) + '</div></div>' +
-       '<div class="tile"><div class="t">Average</div><div class="v num ' + avgTone + '">' + (c.d > 0 ? inr(c.avg) : '—') + '</div></div>' +
-       '<div class="tile"><div class="t">Left</div><div class="v num ' + (c.remainingBudget < 0 ? 'bad' : '') + '">' + inr(c.remainingBudget) + '</div></div>' +
+       '<div class="tile"><div class="t">Plan / day</div><div class="v num">' + money(c.target) + '</div></div>' +
+       '<div class="tile"><div class="t">Average</div><div class="v num ' + avgTone + '">' + (c.d > 0 ? money(c.avg) : '—') + '</div></div>' +
+       '<div class="tile"><div class="t">Left</div><div class="v num ' + (c.remainingBudget < 0 ? 'bad' : '') + '">' + money(c.remainingBudget) + '</div></div>' +
        '</div>';
 
   h += '<section class="sect"><div class="kicker">Each day vs plan</div>' + chartHTML(c) + '</section>';
@@ -501,7 +618,7 @@ function todayHTML(c) {
   h += '<section class="sect"><div class="kicker">Today</div><div class="rulet"></div>' +
        (todays.length
          ? todays.slice().reverse().map(expRow).join('') +
-           '<div class="lx tot"><span class="l">Today</span><span class="d"></span><span class="v num">' + inr(c.spentToday) + '</span></div>'
+           '<div class="lx tot"><span class="l">Today</span><span class="d"></span><span class="v num">' + money(c.spentToday) + '</span></div>'
          : '<p class="empty">Nothing yet today.</p>') +
        '</section>';
   return h;
@@ -512,35 +629,35 @@ function totalsHTML(c) {
   let h = '<h2 class="pg">Totals</h2>';
 
   if (hot) h += '<aside class="note warn"><div class="h">' + esc(hot.label) + ' running high</div>' +
-                '<p>' + inr(hot.excess) + ' over its share.</p></aside>';
+                '<p>' + money(hot.excess) + ' over its share.</p></aside>';
 
   h += '<section class="sect"><div class="kicker">By category</div><div class="rulet"></div>' +
     c.cats.map(k => {
       const pct = k.budget > 0 ? clamp(k.spent / k.budget * 100, 0, 100) : (k.spent > 0 ? 100 : 0);
       const over = k.spent > k.budget;
-      const note = over ? inr(k.spent - k.budget) + ' past its share'
-                 : c.remaining > 0 ? inr(Math.max(0, k.safe)) + ' a day left'
-                 : inr(k.budget - k.spent) + ' unused';
+      const note = over ? money(k.spent - k.budget) + ' past its share'
+                 : c.remaining > 0 ? money(Math.max(0, k.safe)) + ' a day left'
+                 : money(k.budget - k.spent) + ' unused';
       return '<div class="cat"><div class="row"><span class="nm">' + k.label + '</span>' +
-        '<span class="num small">' + inr(k.spent) + ' <span class="mut">of ' + inr(k.budget) + '</span></span></div>' +
+        '<span class="num small">' + money(k.spent) + ' <span class="mut">of ' + money(k.budget) + '</span></span></div>' +
         '<div class="meter' + (over ? ' over' : '') + '"><div style="width:' + pct.toFixed(1) + '%"></div></div>' +
         '<div class="note2">' + note + (hot && hot.id === k.id ? ' · running high' : '') + '</div></div>';
     }).join('') + '</section>';
 
   h += '<section class="sect"><div class="kicker">The budget</div><div class="rulet"></div>' +
-    '<div class="lx"><span class="l">Total</span><span class="d"></span><span class="v num">' + inr(t.total) + '</span></div>' +
-    '<div class="lx sub"><span class="l">Prepaid</span><span class="d"></span><span class="v num">− ' + inr(c.prepaidTotal) + '</span></div>' +
-    '<div class="lx sub"><span class="l">Buffer, ' + t.bufferPct + '%</span><span class="d"></span><span class="v num">− ' + inr(c.buffer) + '</span></div>' +
-    '<div class="lx tot"><span class="l">Spendable</span><span class="d"></span><span class="v num">' + inr(c.spendable) + '</span></div>' +
-    '<div class="lx"><span class="l">Spent</span><span class="d"></span><span class="v num">' + inr(c.spentTotal) + '</span></div>' +
+    '<div class="lx"><span class="l">Total</span><span class="d"></span><span class="v num">' + money(t.total) + '</span></div>' +
+    '<div class="lx sub"><span class="l">Prepaid</span><span class="d"></span><span class="v num">− ' + money(c.prepaidTotal) + '</span></div>' +
+    '<div class="lx sub"><span class="l">Buffer, ' + t.bufferPct + '%</span><span class="d"></span><span class="v num">− ' + money(c.buffer) + '</span></div>' +
+    '<div class="lx tot"><span class="l">Spendable</span><span class="d"></span><span class="v num">' + money(c.spendable) + '</span></div>' +
+    '<div class="lx"><span class="l">Spent</span><span class="d"></span><span class="v num">' + money(c.spentTotal) + '</span></div>' +
     '<div class="lx fin"><span class="l">' + (left >= 0 ? 'Left' : 'Over by') + '</span><span class="d"></span>' +
-      '<span class="v num' + (left < 0 ? ' bad' : '') + '">' + inr(Math.abs(left)) + '</span></div>' +
+      '<span class="v num' + (left < 0 ? ' bad' : '') + '">' + money(Math.abs(left)) + '</span></div>' +
     '</section>';
 
   if (t.prepaid.length) {
     h += '<section class="sect"><div class="kicker">Prepaid</div><div class="rulet"></div>' +
       t.prepaid.map(p => '<div class="lx"><span class="l">' + esc(p.label) + '</span><span class="d"></span>' +
-        '<span class="v num">' + inr(p.amount) + '</span></div>').join('') + '</section>';
+        '<span class="v num">' + money(p.amount) + '</span></div>').join('') + '</section>';
   }
   return h;
 }
@@ -559,12 +676,12 @@ function daysHTML(c) {
     const diff = tot - c.target;
     // a day still in progress has not come in over or under anything yet
     const flag = (isToday || ds > c.today || Math.abs(diff) <= c.target * 0.05) ? ''
-      : diff > 0 ? '<span class="flag bad">' + inr(diff) + ' over</span>'
-                 : '<span class="flag ok">' + inr(-diff) + ' under</span>';
+      : diff > 0 ? '<span class="flag bad">' + money(diff) + ' over</span>'
+                 : '<span class="flag ok">' + money(-diff) + ' under</span>';
     h += '<section class="daygrp">' +
       '<div class="daynum' + (isToday ? ' now' : '') + '" aria-hidden="true">' + (inTrip ? dn : '·') + '</div>' +
       '<div class="daybody"><div class="dayhead"><span class="dt">' + fmtDate(ds) + (isToday ? ' · today' : '') + '</span>' +
-      '<span class="dayright"><span class="daysum num">' + inr(tot) + '</span>' + flag + '</span></div>' +
+      '<span class="dayright"><span class="daysum num">' + money(tot) + '</span>' + flag + '</span></div>' +
       items.slice().reverse().map(expRow).join('') + '</div></section>';
   });
   return h;
@@ -575,12 +692,12 @@ function daysHTML(c) {
 function freshDraft() {
   if (S) {
     const t = S.trip;
-    return { name: t.name, total: String(t.total), start: t.start, days: String(t.days),
+    return { name: t.name, currency: t.currency, total: String(t.total), start: t.start, days: String(t.days),
              buffer: String(t.bufferPct),
              prepaid: t.prepaid.map(p => ({ label: p.label, amount: String(p.amount) })),
              shares: Object.assign({}, t.shares) };
   }
-  return { name: '', total: '', start: todayStr(), days: '7', buffer: '5', prepaid: [], shares: Object.assign({}, DEFAULT_SHARES) };
+  return { name: '', currency: 'INR', total: '', start: todayStr(), days: '7', buffer: '5', prepaid: [], shares: Object.assign({}, DEFAULT_SHARES) };
 }
 
 function formHTML(isNew) {
@@ -592,7 +709,8 @@ function formHTML(isNew) {
 
   h += '<div class="card" style="margin-top:14px">' +
     '<label class="f" style="margin-top:0">Trip name<input data-f="name" value="' + esc(F.name) + '" placeholder="Goa, December" autocomplete="off"></label>' +
-    '<label class="f">Total budget, ₹<input data-f="total" type="number" inputmode="decimal" min="0" value="' + esc(F.total) + '" placeholder="35000"></label>' +
+    currencyField() +
+    '<label class="f">Total budget, ' + esc(symbolOf(F.currency)) + '<input data-f="total" type="number" inputmode="decimal" min="0" value="' + esc(F.total) + '" placeholder="35000"></label>' +
     '<div class="grid2">' +
       '<label class="f">Start date<input data-f="start" type="date" value="' + esc(F.start) + '"></label>' +
       '<label class="f">Days<input data-f="days" type="number" inputmode="numeric" min="1" max="365" value="' + esc(F.days) + '"></label>' +
@@ -604,7 +722,7 @@ function formHTML(isNew) {
     '<p class="hint">Flights, hotels. Comes off the top, never touches your daily average.</p>' +
     F.prepaid.map((p, i) =>
       '<div class="ppr"><input data-pl="' + i + '" value="' + esc(p.label) + '" placeholder="Flight" aria-label="What it was for">' +
-      '<input data-pa="' + i + '" type="number" inputmode="decimal" value="' + esc(p.amount) + '" placeholder="₹" aria-label="Amount">' +
+      '<input data-pa="' + i + '" type="number" inputmode="decimal" value="' + esc(p.amount) + '" placeholder="' + esc(symbolOf(F.currency)) + '" aria-label="Amount">' +
       '<button class="iconbtn" data-act="rmpp" data-i="' + i + '" aria-label="Remove this item">' + ICON.x + '</button></div>').join('') +
     '<button class="linkbtn" data-act="addpp">+ Add an item</button>' +
 
@@ -634,6 +752,20 @@ function formHTML(isNew) {
   return h;
 }
 
+function curOptions(selected, short, order) {
+  const codes = (order || []).filter(isCur);
+  Object.keys(CURRENCIES).forEach(k => { if (codes.indexOf(k) < 0) codes.push(k); });
+  return codes.map(k => '<option value="' + k + '"' + (k === selected ? ' selected' : '') + '>' +
+    (short ? k : k + ' \u2014 ' + CURRENCIES[k]) + '</option>').join('');
+}
+function currencyField() {
+  // the budget's currency can't move once spends are converted into it
+  const locked = !!(S && S.expenses.length);
+  return '<label class="f">Home currency' +
+    '<select data-f="currency"' + (locked ? ' disabled' : '') + '>' + curOptions(F.currency, false, ['INR']) + '</select></label>' +
+    '<p class="hint">' + (locked ? 'Fixed once spends are logged.' : 'The budget and every total use this. Spends can be in any currency.') + '</p>';
+}
+
 function updateShareSum() {
   const el = $('#shareSum');
   if (!el || !F) return;
@@ -660,11 +792,16 @@ function saveTrip() {
     return err('Prepaid items and the buffer use up the whole budget.');
   if (Math.abs(s - 100) >= 0.5) return err('The split has to add up to 100%.');
 
-  const trip = { name: F.name.trim() || 'My trip', total: total, start: F.start, days: days, bufferPct: buf, prepaid: prepaid, shares: shares };
+  const locked = !!(S && S.expenses.length);
+  const currency = locked ? S.trip.currency : (isCur(F.currency) ? F.currency : 'INR');
+  const lastCur = S && isCur(S.trip.lastCur) ? S.trip.lastCur : currency;
+  const trip = { name: F.name.trim() || 'My trip', currency: currency, lastCur: lastCur,
+                 total: total, start: F.start, days: days, bufferPct: buf, prepaid: prepaid, shares: shares };
   const wasNew = !S;
   if (S) S.trip = trip; else S = { trip: trip, expenses: [], updatedAt: 0 };
   F = null; view = 'today'; queueSave(); render();
-  track(wasNew ? 'trip_created' : 'trip_updated', { trip_days: days, prepaid_items: prepaid.length, buffer_pct: buf });
+  track(wasNew ? 'trip_created' : 'trip_updated', { trip_days: days, prepaid_items: prepaid.length, buffer_pct: buf, currency: currency });
+  refreshRates(currency);
   toast(wasNew ? 'Trip set up' : 'Saved');
 }
 
@@ -675,12 +812,85 @@ function openSheet(id) {
   if (id) {
     const e = S.expenses.find(x => x.id === id);
     if (!e) return;
-    A = { id: id, amount: String(e.amount), cat: e.cat, note: e.note, date: e.date, showDate: e.date !== today };
+    A = { id: id, amount: String(e.orig), cat: e.cat, note: e.note, date: e.date, showDate: e.date !== today,
+          cur: e.cur, rate: e.cur === baseCur() ? 1 : e.rate, rateSrc: 'saved' };
   } else {
-    A = { id: null, amount: '', cat: 'food', note: '', date: today, showDate: false };
+    A = { id: null, amount: '', cat: 'food', note: '', date: today, showDate: false, cur: S.trip.lastCur || baseCur() };
+    pickRate();
   }
+  A.inv = invFor(A.cur, A.rate);
   drawSheet();
+  if (A.cur !== baseCur()) waitForLiveRate();
   setTimeout(() => { const i = $('#amtIn'); if (i) i.focus(); }, 60);
+}
+
+/* ask for the rate the way people say it: whichever side reads as a number above 0.1 */
+function invFor(cur, rate) {
+  if (!(rate > 0)) {
+    const b = MAGNITUDE[baseCur()], c = MAGNITUDE[cur];
+    rate = b && c ? b / c : 1;
+  }
+  return rate < 0.1;
+}
+function pickRate() {
+  const live = liveRate(A.cur), last = lastUsedRate(A.cur);
+  if (A.cur === baseCur()) { A.rate = 1; A.rateSrc = 'base'; }
+  else if (live) { A.rate = live; A.rateSrc = 'live'; }
+  else if (last) { A.rate = last; A.rateSrc = 'last'; }
+  else { A.rate = null; A.rateSrc = null; }
+}
+/* a fresher rate may land while the sheet is open; take it unless the person typed their own */
+function waitForLiveRate() {
+  const cur = A.cur;
+  refreshRates(baseCur()).then(() => {
+    if (!A || A.cur !== cur || A.rateSrc === 'manual' || A.rateSrc === 'saved') return;
+    const live = liveRate(cur);
+    if (live && (A.rateSrc !== 'live' || A.rate !== live)) {
+      A.rate = live; A.rateSrc = 'live'; A.inv = invFor(cur, live); A.editRate = false; updateFx();
+    }
+  });
+}
+function rateLabel() {
+  const b = baseCur();
+  return A.inv ? money(1, b) + ' = ' + numStr(1 / A.rate) + ' ' + A.cur
+               : '1 ' + A.cur + ' = ' + symbolOf(b) + numStr(A.rate);
+}
+function convHTML() {
+  const amt = Number(A.amount);
+  return amt > 0 && A.rate > 0 ? '≈ ' + money(amt * A.rate) : '';
+}
+function fxHTML() {
+  const b = baseCur();
+  if (A.cur === b) return '';
+  const src = A.rateSrc === 'live'
+      ? (RATES && Date.now() - RATES.at > 36 * 3600e3 ? 'rate from ' + fmtDate(new Date(RATES.at).toISOString().slice(0, 10)) : 'today’s rate') +
+        ' · <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates by Exchange Rate API</a>'
+    : A.rateSrc === 'last' ? 'your last ' + A.cur + ' rate'
+    : A.rateSrc === 'saved' ? 'rate when logged'
+    : A.rateSrc === 'manual' ? 'your rate' : '';
+  if (A.editRate || !(A.rate > 0)) {
+    const shown = A.rate > 0 ? numStr(A.inv ? 1 / A.rate : A.rate) : '';
+    const lab = A.inv ? money(1, b) + ' buys how many ' + A.cur + '?' : '1 ' + A.cur + ' is how many ' + symbolOf(b) + '?';
+    return '<div class="fxline"><span class="conv num" id="fxConv">' + convHTML() + '</span></div>' +
+      '<label class="f" style="margin-top:8px">' + esc(lab) +
+      '<input data-a="rate" id="rateIn" type="number" inputmode="decimal" min="0" step="any" value="' + esc(shown) + '"></label>' +
+      (A.rate > 0 ? '' : '<p class="hint">No rate saved for ' + A.cur + ' yet, and none could be fetched.</p>');
+  }
+  return '<div class="fxline"><span class="conv num" id="fxConv">' + convHTML() + '</span>' +
+    '<span class="num">' + esc(rateLabel()) + '</span>' +
+    '<button class="linkbtn" data-act="editrate">Change</button></div>' +
+    '<p class="hint" style="margin-top:0">' + src + '</p>';
+}
+function updateFx() { const el = $('#fx'); if (el) el.innerHTML = fxHTML(); }
+function updateConv() { const el = $('#fxConv'); if (el) el.innerHTML = convHTML(); }
+function setCur(cur) {
+  if (!isCur(cur) || cur === A.cur) return;
+  A.cur = cur; A.editRate = false;
+  pickRate();
+  A.inv = invFor(cur, A.rate);
+  drawSheet();
+  if (cur !== baseCur()) waitForLiveRate();
+  const i = $('#amtIn'); if (i) i.focus();
 }
 
 function drawSheet() {
@@ -689,8 +899,13 @@ function drawSheet() {
     '<div class="overlay" data-act="closesheet"><div class="sheet" role="dialog" aria-modal="true" aria-label="' +
     (A.id ? 'Edit spend' : 'Add spend') + '">' +
     '<h3>' + (A.id ? 'Edit spend' : 'What did you spend?') + '</h3>' +
-    '<input id="amtIn" class="amtin num" data-a="amount" type="number" inputmode="decimal" min="0" placeholder="₹ 0" value="' +
-      esc(A.amount) + '" aria-label="Amount in rupees">' +
+    '<div class="amtrow">' +
+      '<input id="amtIn" class="amtin num" data-a="amount" type="number" inputmode="decimal" min="0" step="any" placeholder="0" value="' +
+        esc(A.amount) + '" aria-label="Amount in ' + esc(CURRENCIES[A.cur]) + '">' +
+      '<select class="cursel" data-a="cur" aria-label="Currency paid in">' +
+        curOptions(A.cur, true, [baseCur(), S.trip.lastCur].concat(S.expenses.map(e => e.cur))) + '</select>' +
+    '</div>' +
+    '<div class="fx" id="fx">' + fxHTML() + '</div>' +
     '<div class="chips">' + CATS.map(k =>
       '<button class="chip' + (A.cat === k.id ? ' on' : '') + '" data-act="pickcat" data-c="' + k.id + '"' +
       (A.cat === k.id ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' + k.label + '</button>').join('') + '</div>' +
@@ -706,17 +921,23 @@ function drawSheet() {
 }
 
 function saveExp() {
-  const amt = Number(A.amount);
-  if (!(amt > 0)) { $('#sheetErr').textContent = 'Enter an amount above zero.'; return; }
+  const orig = Number(A.amount), base = baseCur(), foreign = A.cur !== base;
+  const rate = foreign ? Number(A.rate) : 1;
+  if (!(orig > 0)) { $('#sheetErr').textContent = 'Enter an amount above zero.'; return; }
+  if (!(rate > 0)) { $('#sheetErr').textContent = 'Enter the exchange rate for ' + A.cur + '.'; return; }
   if (!validDate(A.date)) { $('#sheetErr').textContent = 'Pick a valid day.'; return; }
+  const fields = { cat: A.cat, note: A.note.trim(), date: A.date, cur: A.cur, orig: orig, rate: rate,
+                   amount: foreign ? Math.round(orig * rate * 100) / 100 : orig };
   if (A.id) {
     const e = S.expenses.find(x => x.id === A.id);
-    if (e) { e.amount = amt; e.cat = A.cat; e.note = A.note.trim(); e.date = A.date; }
+    if (e) Object.assign(e, fields);
   } else {
-    S.expenses.push({ id: uid(), date: A.date, cat: A.cat, amount: amt, note: A.note.trim() });
+    S.expenses.push(Object.assign({ id: uid() }, fields));
   }
+  S.trip.lastCur = A.cur;
   const wasNew = !A.id;
-  track(wasNew ? 'spend_logged' : 'spend_edited', { category: A.cat, backdated: A.date !== todayStr(), has_note: !!A.note.trim() });
+  track(wasNew ? 'spend_logged' : 'spend_edited', { category: A.cat, backdated: A.date !== todayStr(), has_note: !!A.note.trim(),
+        currency: A.cur, foreign: foreign });
   A = null;
   $('#overlay').innerHTML = '';
   pulse = true;
@@ -745,7 +966,7 @@ function confirmBox(msg, yes, fn) {
 }
 
 function backupText() {
-  return JSON.stringify({ app: 'trip-budget', version: 1, exportedAt: new Date().toISOString(),
+  return JSON.stringify({ app: 'trip-budget', version: 2, exportedAt: new Date().toISOString(),
                           trip: S.trip, expenses: S.expenses }, null, 2);
 }
 function importText(txt) {
@@ -802,6 +1023,7 @@ document.addEventListener('click', async ev => {
     }
     case 'pickcat': A.cat = el.dataset.c; drawSheet(); { const i = $('#amtIn'); if (i) i.focus(); } break;
     case 'showdate': A.showDate = true; drawSheet(); break;
+    case 'editrate': A.editRate = true; updateFx(); { const r = $('#rateIn'); if (r) r.focus(); } break;
     case 'saveexp': saveExp(); break;
     case 'addpp': F.prepaid.push({ label: '', amount: '' }); render(); break;
     case 'rmpp': F.prepaid.splice(Number(el.dataset.i), 1); render(); break;
@@ -836,7 +1058,21 @@ document.addEventListener('click', async ev => {
 
 document.addEventListener('input', ev => {
   const t = ev.target;
-  if (A && t.dataset.a) { A[t.dataset.a] = t.value; return; }
+  if (A && t.dataset.a) {
+    const k = t.dataset.a;
+    if (k === 'cur') { setCur(t.value); return; }
+    if (k === 'rate') {
+      const v = Number(t.value);
+      A.rate = v > 0 ? (A.inv ? 1 / v : v) : null;
+      A.rateSrc = 'manual';
+      updateConv();
+      return;
+    }
+    A[k] = t.value;
+    if (k === 'amount') updateConv();
+    return;
+  }
+  if (F && t.dataset.f === 'currency') { F.currency = t.value; render(); return; }
   if (!F) return;
   if (t.dataset.f !== undefined) F[t.dataset.f] = t.value;
   else if (t.dataset.sh !== undefined) { F.shares[t.dataset.sh] = t.value; updateShareSum(); }
@@ -846,6 +1082,9 @@ document.addEventListener('input', ev => {
 
 document.addEventListener('change', ev => {
   const t = ev.target;
+  // some mobile browsers only fire change, not input, for <select>
+  if (A && t.dataset.a === 'cur') { setCur(t.value); return; }
+  if (F && t.dataset.f === 'currency' && F.currency !== t.value) { F.currency = t.value; render(); return; }
   if (t.dataset.file !== undefined && t.files && t.files[0]) {
     const r = new FileReader();
     r.onload = () => importText(String(r.result));

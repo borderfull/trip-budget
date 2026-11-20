@@ -275,6 +275,27 @@ textarea{min-height:88px;font-family:ui-monospace,Menlo,Consolas,monospace;font-
   font-size:13px;z-index:30;max-width:90vw;letter-spacing:.02em;
 }
 
+/* ---- currencies ---- */
+select{
+  font:inherit;color:var(--ink);background-color:var(--paper);border:1px solid var(--rule);border-radius:2px;
+  padding:0 30px 0 12px;min-height:46px;width:100%;margin-top:6px;
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%238a8174' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+select:disabled{opacity:.55}
+.amtrow{display:flex;gap:8px;align-items:stretch}
+.amtrow .amtin{flex:1 1 auto;min-width:0;margin-top:0}
+.amtrow .cursel{flex:none;width:92px;margin-top:0;font-weight:600;letter-spacing:.05em}
+.fx:empty{display:none}
+.fx{margin-top:8px}
+.fxline{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;font-size:13px;color:var(--ink-2)}
+.fxline .conv{font-family:var(--serif);font-size:20px;font-weight:500;color:var(--ink)}
+.fxline .linkbtn{min-height:32px;padding:4px 2px}
+.fx .hint a{color:var(--ink-2)}
+.inlocal{font-family:var(--serif);font-size:18px;color:var(--ink-2);margin-top:4px}
+.exp .sub .paid{text-transform:none;letter-spacing:0}
+
 /* ---- charts ---- */
 svg text{fill:var(--ink-2);font-family:var(--sans);font-size:10px;letter-spacing:.06em}
 .empty{color:var(--ink-2);padding:16px 0;font-size:14px;font-family:var(--serif);font-style:italic;font-size:16px}
